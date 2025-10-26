@@ -17,9 +17,16 @@
 package eth
 
 import (
+	"bytes"
 	"context"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"math/big"
+	"net"
+	"net/http"
 	"time"
 
 	"github.com/ethereum/go-ethereum"
@@ -42,7 +49,14 @@ import (
 	"github.com/ethereum/go-ethereum/event"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/rpc"
+
+	"golang.org/x/net/proxy" // MOO: refactor!
 )
+
+// MOO: move!
+type Onion struct {
+	addrs []string
+}
 
 // EthAPIBackend implements ethapi.Backend and tracers.Backend for full nodes
 type EthAPIBackend struct {
@@ -50,6 +64,8 @@ type EthAPIBackend struct {
 	allowUnprotectedTxs bool
 	eth                 *Ethereum
 	gpo                 *gasprice.Oracle
+
+	onion *Onion
 }
 
 // ChainConfig returns the active chain configuration.
@@ -319,7 +335,99 @@ func (b *EthAPIBackend) SubscribeLogsEvent(ch chan<- []*types.Log) event.Subscri
 	return b.eth.BlockChain().SubscribeLogsEvent(ch)
 }
 
+// / MOO: rename or reuse!
+type RPCRequest struct {
+	Jsonrpc string      `json:"jsonrpc"`
+	Method  string      `json:"method"`
+	Params  interface{} `json:"params"`
+	ID      int         `json:"id"`
+}
+
+func NewRawTx(signedTx *types.Transaction) RPCRequest {
+	s, _ := signedTx.MarshalBinary()
+	ss := "0x" + hex.EncodeToString(s)
+	return RPCRequest{Jsonrpc: "2.0", Method: "eth_sendRawTransaction", ID: 0, Params: []string{ss}}
+}
+
+// / MOO: rename or reuse!
+type RPCResponse struct {
+	Result json.RawMessage `json:"result"`
+	Error  interface{}     `json:"error"`
+	ID     int             `json:"id"`
+}
+
+// MOO: refactor LLM's code A LOT
+func sendToOnionSingle(addr string, signedTx *types.Transaction) error {
+	torProxy := "127.0.0.1:9050" // MOO: hardcode!
+	rpcEndpoint := "http://" + addr
+
+	// Create SOCKS5 dialer through Tor
+	dialer, err := proxy.SOCKS5("tcp", torProxy, nil, &net.Dialer{
+		Timeout:   30 * time.Second, // MOO: hardcode!
+		KeepAlive: 30 * time.Second, // MOO: hardcode!
+	})
+
+	if err != nil {
+		fmt.Printf("Failed to create SOCKS5 proxy: %v", err)
+		return err
+	}
+
+	httpTransport := &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return dialer.(proxy.ContextDialer).DialContext(ctx, network, addr)
+		},
+	}
+	client := &http.Client{Transport: httpTransport, Timeout: 60 * time.Second}
+
+	// Prepare JSON-RPC request
+	rpcReq := NewRawTx(signedTx)
+
+	reqBody, err := json.Marshal(rpcReq)
+	if err != nil {
+		fmt.Printf("Failed to marshal JSON-RPC request: %v", err)
+
+		return err
+	}
+
+	fmt.Println(string(reqBody))
+
+	// Send the request
+	resp, err := client.Post(rpcEndpoint, "application/json", bytes.NewReader(reqBody))
+	if err != nil {
+		fmt.Printf("Request failed: %v", err)
+
+		return err
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	var rpcResp RPCResponse
+	if err := json.Unmarshal(body, &rpcResp); err != nil {
+		fmt.Printf("Failed to parse JSON-RPC response: %v", err)
+
+		return err
+	}
+
+	// Print response
+	fmt.Printf("Response: %s\n", string(rpcResp.Result))
+	if rpcResp.Error != nil {
+		fmt.Printf("Error: %+v\n", rpcResp.Error)
+	}
+
+	return nil
+}
+
+func sendToOnion(onion *Onion, signedTx *types.Transaction) error {
+	return sendToOnionSingle(onion.addrs[0], signedTx) // MOO: chose addr + some pool eventually?
+}
+
 func (b *EthAPIBackend) SendTx(ctx context.Context, signedTx *types.Transaction) error {
+
+	// MOO: refactor!
+	if b.onion != nil && len(b.onion.addrs) > 0 {
+		return sendToOnion(b.onion, signedTx)
+	}
+
 	err := b.eth.txPool.Add([]*types.Transaction{signedTx}, false)[0]
 
 	// If the local transaction tracker is not configured, returns whatever
