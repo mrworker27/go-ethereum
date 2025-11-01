@@ -156,6 +156,8 @@ var (
 		utils.BeaconGenesisTimeFlag,
 		utils.BeaconCheckpointFlag,
 		utils.BeaconCheckpointFileFlag,
+		utils.OnionEnabledFlag, // MOO: here?
+		utils.OnionPeersFlag,   // MOO: here?
 	}, utils.NetworkFlags, utils.DatabaseFlags)
 
 	rpcFlags = []cli.Flag{

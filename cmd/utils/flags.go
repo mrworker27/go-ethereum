@@ -728,6 +728,22 @@ var (
 		Value:    "",
 		Category: flags.APICategory,
 	}
+
+	// MOO: better place?
+
+	OnionEnabledFlag = &cli.BoolFlag{
+		Name:     "onion",
+		Usage:    "Enable use of TOR for transaction broadcast",
+		Category: flags.APICategory,
+	}
+
+	OnionPeersFlag = &cli.StringFlag{
+		Name:     "onion.peers",
+		Usage:    "Comma separated list of onion addresses to which transactions should be forwarded",
+		Value:    strings.Join(node.DefaultConfig.OnionPeers, ","),
+		Category: flags.APICategory,
+	}
+
 	GraphQLEnabledFlag = &cli.BoolFlag{
 		Name:     "graphql",
 		Usage:    "Enable GraphQL on the HTTP-RPC server. Note that GraphQL can only be started if an HTTP server is started as well.",
@@ -1237,9 +1253,15 @@ func setHTTP(ctx *cli.Context, cfg *node.Config) {
 		cfg.HTTPVirtualHosts = SplitAndTrim(ctx.String(HTTPVirtualHostsFlag.Name))
 	}
 
+	// MOO: place?
+	if ctx.IsSet(OnionPeersFlag.Name) {
+		cfg.OnionPeers = SplitAndTrim(ctx.String(OnionPeersFlag.Name))
+	}
+
 	if ctx.IsSet(HTTPPathPrefixFlag.Name) {
 		cfg.HTTPPathPrefix = ctx.String(HTTPPathPrefixFlag.Name)
 	}
+
 	if ctx.IsSet(AllowUnprotectedTxs.Name) {
 		cfg.AllowUnprotectedTxs = ctx.Bool(AllowUnprotectedTxs.Name)
 	}
